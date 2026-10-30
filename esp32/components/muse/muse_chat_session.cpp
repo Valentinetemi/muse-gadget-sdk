@@ -1345,6 +1345,11 @@ static void image_begin(image_job_t *job, uint32_t gen)
         finish_image_job(job, MUSE_CHAT_IMAGE_NETWORK_ERROR);
         return;
     }
+    if (gen != s_gen.load()) {   /* a press or cancel came while connecting */
+        turn_finish();
+        finish_image_job(job, MUSE_CHAT_IMAGE_BUSY);
+        return;
+    }
     send_image(job);
 }
 

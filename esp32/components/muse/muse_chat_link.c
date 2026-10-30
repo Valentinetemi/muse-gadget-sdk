@@ -707,14 +707,17 @@ static void on_row(row_t *r)
 
 static void subscription_error(int status)
 {
-    if (status == 403) fail("MUSE REPLY ACCESS DENIED (403)");
-    else if (status == 401) fail("MUSE REPLY AUTH REQUIRED (401)");
-    else if (status == MUSE_LINK_REQ_TOO_LARGE) fail(TOO_LONG);
-    else if (status <= 0 || status == 200) fail("LOST CONNECTION TO MUSE");
+    /* An HTTP refusal is final for a photo still waiting on its ACK; a lost stream isn't. */
+    muse_chat_image_result_t image = status > 0 && status != 200 ? MUSE_CHAT_IMAGE_REJECTED
+                                                                 : MUSE_CHAT_IMAGE_NETWORK_ERROR;
+    if (status == 403) fail_as("MUSE REPLY ACCESS DENIED (403)", image);
+    else if (status == 401) fail_as("MUSE REPLY AUTH REQUIRED (401)", image);
+    else if (status == MUSE_LINK_REQ_TOO_LARGE) fail_as(TOO_LONG, image);
+    else if (status <= 0 || status == 200) fail_as("LOST CONNECTION TO MUSE", image);
     else {
         char why[EV_TEXT];
         snprintf(why, sizeof(why), "MUSE REPLY ERROR (HTTP %d)", status);
-        fail(why);
+        fail_as(why, image);
     }
 }
 
@@ -899,15 +902,17 @@ muse_chat_image_result_t muse_chat_send_jpeg(char *jpeg_base64, size_t jpeg_base
     memset(&s_turn, 0, sizeof(s_turn));
     s_turn.phase = T_IMAGE;
     s_turn.image = true;
+    /* The subscription opens first: an open doesn't wait for room, and the
+     * photo's pieces fill the request queue faster than it drains. */
     bool ok = request(RX_NOTE, "POST", "/chat/stream", true, false)
+              && request(RX_SUB, "POST", "/chat/subscribe", true, false)
+              && muse_link_req_send(s_stream[RX_SUB], "{}", 2, true, SEND_WAIT_MS)
               && send_image_piece(MUSE_CHAT_IMAGE_HEAD_1, sizeof(MUSE_CHAT_IMAGE_HEAD_1) - 1)
               && send_image_piece(escaped, caption_len)
               && send_image_piece(MUSE_CHAT_IMAGE_HEAD_2, sizeof(MUSE_CHAT_IMAGE_HEAD_2) - 1)
               && send_image_piece(escaped, caption_len)
               && send_image_piece(MUSE_CHAT_IMAGE_HEAD_3, sizeof(MUSE_CHAT_IMAGE_HEAD_3) - 1)
               && send_image_piece(jpeg_base64, jpeg_base64_len)
-              && request(RX_SUB, "POST", "/chat/subscribe", true, false)
-              && muse_link_req_send(s_stream[RX_SUB], "{}", 2, true, SEND_WAIT_MS)
               && muse_link_req_send(s_stream[RX_NOTE], MUSE_CHAT_IMAGE_TAIL,
                                     sizeof(MUSE_CHAT_IMAGE_TAIL) - 1, true, SEND_WAIT_MS);
     free(escaped);

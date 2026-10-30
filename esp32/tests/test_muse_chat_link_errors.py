@@ -86,7 +86,8 @@ static size_t largest_reallocation;
 static int operations[20], operation_count;
 static char sent_body[MUSE_CHAT_IMAGE_BODY_MAX+1];
 static size_t sent_body_len, largest_body_chunk;
-static int body_end_count;
+static int body_end_count, note_pieces_before_sub;
+static bool sub_open;
 static void operation(int n) { if(operation_count<20) operations[operation_count++]=n; }
 static void *test_malloc(size_t n) {
     allocation_attempts++;
@@ -110,7 +111,8 @@ static int64_t muse_link_req_open(const char *verb,const char *path,const char *
         for(int i=0;headers[i];i+=2) if(!strcmp(headers[i],"Accept")) ndjson=!strcmp(headers[i+1],"application/x-ndjson");
         assert(ndjson);
     }
-    if(!slot) { sent_body_len=largest_body_chunk=0; body_end_count=0; sent_body[0]=0; }
+    if(!slot) { sent_body_len=largest_body_chunk=0; body_end_count=0; sent_body[0]=0; note_pieces_before_sub=0; sub_open=false; }
+    else sub_open=true;
     requests[slot].cb=cb; requests[slot].ctx=ctx; requests[slot].id=++next_id;
     operation(slot ? 3 : 1); return next_id;
 }
@@ -120,6 +122,7 @@ static bool muse_link_req_send(int64_t id,const void *data,size_t len,bool end,i
     if(id==requests[1].id) { assert(end && len==2 && !memcmp(data,"{}",2)); operation(4); }
     else {
         assert(id==requests[0].id);
+        if(!sub_open) note_pieces_before_sub++;
         assert(sent_body_len+len<=MUSE_CHAT_IMAGE_BODY_MAX);
         memcpy(sent_body+sent_body_len,data,len); sent_body_len+=len; sent_body[sent_body_len]=0;
         if(len>largest_body_chunk) largest_body_chunk=len;
@@ -372,6 +375,8 @@ static void image_schema_and_ack(void) {
     assert(muse_chat_image_body_size(caption,jpeg_len,&escaped_len,&body_len));
     assert(muse_chat_send_jpeg(jpeg,jpeg_len,caption,image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_QUEUED);
     assert(s_turn.phase==T_ACK && !image_callbacks);
+    /* Opens don't wait for queue room: the subscription goes before the pieces. */
+    assert(sub_open && !note_pieces_before_sub);
     assert(sent_body_len==body_len && sent_body_len<=MUSE_CHAT_IMAGE_BODY_MAX);
     assert(largest_body_chunk<=CHUNK_BYTES && body_end_count==1);
     assert(!memcmp(sent_body,MUSE_CHAT_IMAGE_HEAD_1,sizeof(MUSE_CHAT_IMAGE_HEAD_1)-1));
@@ -438,6 +443,11 @@ static void image_ack_and_network_errors(void) {
     image_callbacks=0;
     assert(muse_chat_send_jpeg(photo(8),8,"caption",image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_QUEUED);
     image_ack("{}");
+    assert(s_turn.phase==T_IDLE && image_callbacks==1 && image_result==MUSE_CHAT_IMAGE_REJECTED);
+
+    image_callbacks=0; /* an HTTP refusal of the reply stream is final, not a network error */
+    assert(muse_chat_send_jpeg(photo(8),8,"caption",image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_QUEUED);
+    feed(RX_SUB,403,NULL,0,true); voice_idle();
     assert(s_turn.phase==T_IDLE && image_callbacks==1 && image_result==MUSE_CHAT_IMAGE_REJECTED);
 
     image_callbacks=0;
