@@ -29,7 +29,7 @@ static bool escaped_len(const char *text, size_t *out)
                       || *p == '\r' || *p == '\t')
                          ? 2
                          : *p < 0x20 ? 6 : 1;
-        if (n > MUSE_HATCH_CHAT_BODY_MAX || add > MUSE_HATCH_CHAT_BODY_MAX - n) {
+        if (n > MUSE_CHAT_IMAGE_BODY_MAX || add > MUSE_CHAT_IMAGE_BODY_MAX - n) {
             return false;
         }
         n += add;
@@ -39,15 +39,15 @@ static bool escaped_len(const char *text, size_t *out)
     return true;
 }
 
-bool muse_hatch_image_body_size(const char *caption, size_t jpeg_base64_len,
-                                size_t *escaped_caption_len, size_t *body_len)
+bool muse_chat_image_body_size(const char *caption, size_t jpeg_base64_len,
+                               size_t *escaped_caption_len, size_t *body_len)
 {
     size_t escaped;
-    const size_t fixed = sizeof(MUSE_HATCH_IMAGE_HEAD_1) - 1 + sizeof(MUSE_HATCH_IMAGE_HEAD_2) - 1
-                         + sizeof(MUSE_HATCH_IMAGE_HEAD_3) - 1 + sizeof(MUSE_HATCH_IMAGE_TAIL) - 1;
-    if (!escaped_len(caption, &escaped) || fixed > MUSE_HATCH_CHAT_BODY_MAX
-        || jpeg_base64_len > MUSE_HATCH_CHAT_BODY_MAX - fixed
-        || escaped > (MUSE_HATCH_CHAT_BODY_MAX - fixed - jpeg_base64_len) / 2) {
+    const size_t fixed = sizeof(MUSE_CHAT_IMAGE_HEAD_1) - 1 + sizeof(MUSE_CHAT_IMAGE_HEAD_2) - 1
+                         + sizeof(MUSE_CHAT_IMAGE_HEAD_3) - 1 + sizeof(MUSE_CHAT_IMAGE_TAIL) - 1;
+    if (!escaped_len(caption, &escaped) || fixed > MUSE_CHAT_IMAGE_BODY_MAX
+        || jpeg_base64_len > MUSE_CHAT_IMAGE_BODY_MAX - fixed
+        || escaped > (MUSE_CHAT_IMAGE_BODY_MAX - fixed - jpeg_base64_len) / 2) {
         return false;
     }
     if (escaped_caption_len) {
@@ -59,7 +59,7 @@ bool muse_hatch_image_body_size(const char *caption, size_t jpeg_base64_len,
     return true;
 }
 
-bool muse_hatch_json_escape(const char *text, char *out, size_t cap)
+bool muse_chat_json_escape(const char *text, char *out, size_t cap)
 {
     const unsigned char *p = (const unsigned char *)(text ? text : "");
     char *o = out;
@@ -96,7 +96,7 @@ bool muse_hatch_json_escape(const char *text, char *out, size_t cap)
     return true;
 }
 
-bool muse_hatch_is_jpeg_base64(const char *data, size_t len)
+bool muse_chat_is_jpeg_base64(const char *data, size_t len)
 {
     /* Every JPEG begins FF D8 FF, whose first four base64 bytes are /9j/. */
     if (!data || len < 4 || len % 4 || memcmp(data, "/9j/", 4)) {

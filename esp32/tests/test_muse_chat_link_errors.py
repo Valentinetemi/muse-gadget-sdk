@@ -43,7 +43,8 @@ class ChatLinkErrors(unittest.TestCase):
 #include "muse_chat.h"
 #include "muse_chat_priv.h"
 #define cJSON_Parse(value) cJSON_ParseWithLength((value),strlen(value))
-#define cJSON_GetStringValue(item) (cJSON_IsString(item) ? (item)->valuestring : NULL)
+static char *test_string_value(const cJSON *item) { return cJSON_IsString(item) ? item->valuestring : NULL; }
+#define cJSON_GetStringValue test_string_value
 #define cJSON_IsFalse(item) ((item) && (item)->type == cJSON_False)
 #define ESP_LOGW(tag,...) ((void)(tag))
 #define ESP_LOGI(tag,...) ((void)(tag))
@@ -83,7 +84,7 @@ static struct { frame_fn cb; void *ctx; int id; } requests[2];
 static int next_id, allocation_attempts, fail_allocation, fail_send, fail_open;
 static size_t largest_reallocation;
 static int operations[20], operation_count;
-static char sent_body[MUSE_HATCH_CHAT_BODY_MAX+1];
+static char sent_body[MUSE_CHAT_IMAGE_BODY_MAX+1];
 static size_t sent_body_len, largest_body_chunk;
 static int body_end_count;
 static void operation(int n) { if(operation_count<20) operations[operation_count++]=n; }
@@ -119,7 +120,7 @@ static bool muse_link_req_send(int64_t id,const void *data,size_t len,bool end,i
     if(id==requests[1].id) { assert(end && len==2 && !memcmp(data,"{}",2)); operation(4); }
     else {
         assert(id==requests[0].id);
-        assert(sent_body_len+len<=MUSE_HATCH_CHAT_BODY_MAX);
+        assert(sent_body_len+len<=MUSE_CHAT_IMAGE_BODY_MAX);
         memcpy(sent_body+sent_body_len,data,len); sent_body_len+=len; sent_body[sent_body_len]=0;
         if(len>largest_body_chunk) largest_body_chunk=len;
         if(end) body_end_count++;
@@ -151,7 +152,7 @@ static void feed(int slot,int status,const char *p,size_t n,bool end) {
 }
 static void voice_idle(void) {
     char text[EV_TEXT];
-    if(!muse_hatch_needs_voice_poll()) return;
+    if(!muse_chat_needs_voice_poll()) return;
     while(muse_hatch_turn_event(text,sizeof(text))!=MUSE_HATCH_EV_NONE) {}
 }
 static void sub(const char *p) { feed(RX_SUB,200,p,strlen(p),false); }
@@ -354,9 +355,9 @@ static void text_modality(void) {
     assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(text,"output_modality")),"text"));
     cJSON_Delete(text);
 }
-static muse_hatch_image_result_t image_result;
+static muse_chat_image_result_t image_result;
 static int image_callbacks;
-static void image_done(muse_hatch_image_result_t result,void *ctx) {
+static void image_done(muse_chat_image_result_t result,void *ctx) {
     assert(ctx==(void*)0x1234); image_result=result; image_callbacks++;
 }
 static char *photo(size_t len) {
@@ -368,18 +369,18 @@ static void image_schema_and_ack(void) {
     size_t jpeg_len=5004, escaped_len, body_len;
     char *jpeg=photo(jpeg_len);
     image_callbacks=0;
-    assert(muse_hatch_image_body_size(caption,jpeg_len,&escaped_len,&body_len));
-    assert(muse_hatch_send_jpeg(jpeg,jpeg_len,caption,image_done,(void*)0x1234)==MUSE_HATCH_IMAGE_QUEUED);
+    assert(muse_chat_image_body_size(caption,jpeg_len,&escaped_len,&body_len));
+    assert(muse_chat_send_jpeg(jpeg,jpeg_len,caption,image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_QUEUED);
     assert(s_turn.phase==T_ACK && !image_callbacks);
-    assert(sent_body_len==body_len && sent_body_len<=MUSE_HATCH_CHAT_BODY_MAX);
+    assert(sent_body_len==body_len && sent_body_len<=MUSE_CHAT_IMAGE_BODY_MAX);
     assert(largest_body_chunk<=CHUNK_BYTES && body_end_count==1);
-    assert(!memcmp(sent_body,MUSE_HATCH_IMAGE_HEAD_1,sizeof(MUSE_HATCH_IMAGE_HEAD_1)-1));
+    assert(!memcmp(sent_body,MUSE_CHAT_IMAGE_HEAD_1,sizeof(MUSE_CHAT_IMAGE_HEAD_1)-1));
     assert(strstr(sent_body,"\"mime_type\":\"image/jpeg\""));
     assert(strstr(sent_body,"\"filename\":\"camera.jpg\""));
     assert(strstr(sent_body,"\"message\":\"look \\\"here\\\"\\n\\\\\""));
     assert(strstr(sent_body,"\"type\":\"text\",\"text\":\"look \\\"here\\\"\\n\\\\\""));
-    assert(!memcmp(sent_body+sent_body_len-sizeof(MUSE_HATCH_IMAGE_TAIL)+1,
-                   MUSE_HATCH_IMAGE_TAIL,sizeof(MUSE_HATCH_IMAGE_TAIL)-1));
+    assert(!memcmp(sent_body+sent_body_len-sizeof(MUSE_CHAT_IMAGE_TAIL)+1,
+                   MUSE_CHAT_IMAGE_TAIL,sizeof(MUSE_CHAT_IMAGE_TAIL)-1));
     cJSON *body=cJSON_Parse(sent_body); assert(body);
     assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(body,"message")),caption));
     assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(body,"output_modality")),"text"));
@@ -387,102 +388,109 @@ static void image_schema_and_ack(void) {
     cJSON *text=items->child, *file=text ? text->next : NULL; assert(text && file && !file->next);
     assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(text,"type")),"text"));
     assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(text,"text")),caption));
-    assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(file,"type")),"file"));
+    assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(file,"type")),"image"));
     assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(file,"mime_type")),"image/jpeg"));
     assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(file,"filename")),"camera.jpg"));
     const char *data=cJSON_GetStringValue(cJSON_GetObjectItem(file,"data_base64"));
     assert(data && strlen(data)==jpeg_len && !memcmp(data,"/9j/",4));
     cJSON_Delete(body);
     image_note_ack();
-    assert(s_turn.phase==T_REPLY && image_callbacks==1 && image_result==MUSE_HATCH_IMAGE_SENT);
+    assert(s_turn.phase==T_REPLY && image_callbacks==1 && image_result==MUSE_CHAT_IMAGE_SENT);
     muse_hatch_turn_cancel(); assert(image_callbacks==1);
 }
 static void image_limits_and_immediate_errors(void) {
     image_callbacks=0;
     char *bad=malloc(9); memcpy(bad,"iVBORw0=",9);
-    assert(muse_hatch_send_jpeg(bad,8,"",image_done,(void*)0x1234)==MUSE_HATCH_IMAGE_INVALID_JPEG);
+    assert(muse_chat_send_jpeg(bad,8,"",image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_INVALID_JPEG);
     assert(!image_callbacks && !next_id);
 
     size_t escaped, base;
-    assert(muse_hatch_image_body_size("\"\n",4,&escaped,&base) && escaped==4);
+    assert(muse_chat_image_body_size("\"\n",4,&escaped,&base) && escaped==4);
     size_t fixed=base-4;
-    size_t exact=(MUSE_HATCH_CHAT_BODY_MAX-fixed)&~(size_t)3;
+    size_t exact=(MUSE_CHAT_IMAGE_BODY_MAX-fixed)&~(size_t)3;
     char *too_big=photo(exact+4);
-    assert(muse_hatch_send_jpeg(too_big,exact+4,"\"\n",image_done,(void*)0x1234)==MUSE_HATCH_IMAGE_TOO_LARGE);
+    assert(muse_chat_send_jpeg(too_big,exact+4,"\"\n",image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_TOO_LARGE);
     assert(!next_id && !image_callbacks);
 
     req_ready=false;
-    assert(muse_hatch_send_jpeg(photo(8),8,"",image_done,(void*)0x1234)==MUSE_HATCH_IMAGE_NETWORK_ERROR);
+    assert(muse_chat_send_jpeg(photo(8),8,"",image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_NETWORK_ERROR);
     req_ready=true;
     begin(); size_t voice_len=sent_body_len;
-    assert(muse_hatch_send_jpeg(photo(8),8,"",image_done,(void*)0x1234)==MUSE_HATCH_IMAGE_BUSY);
+    assert(muse_chat_send_jpeg(photo(8),8,"",image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_BUSY);
     assert(s_turn.phase==T_TALKING && sent_body_len==voice_len && !image_callbacks);
     muse_hatch_turn_cancel();
 
     fail_allocation=1;
-    assert(muse_hatch_send_jpeg(photo(8),8,"",image_done,(void*)0x1234)==MUSE_HATCH_IMAGE_NO_MEMORY);
+    assert(muse_chat_send_jpeg(photo(8),8,"",image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_NO_MEMORY);
     assert(s_turn.phase==T_IDLE && !image_callbacks);
 
     fail_send=1;
-    assert(muse_hatch_send_jpeg(photo(8),8,"",image_done,(void*)0x1234)==MUSE_HATCH_IMAGE_NETWORK_ERROR);
+    assert(muse_chat_send_jpeg(photo(8),8,"",image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_NETWORK_ERROR);
     assert(s_turn.phase==T_IDLE && !image_callbacks);
 
-    assert(muse_hatch_send_jpeg(photo(exact),exact,"\"\n",image_done,(void*)0x1234)==MUSE_HATCH_IMAGE_QUEUED);
-    assert(sent_body_len==fixed+exact && sent_body_len<=MUSE_HATCH_CHAT_BODY_MAX);
-    assert(MUSE_HATCH_CHAT_BODY_MAX-sent_body_len<4 && largest_body_chunk<=CHUNK_BYTES && body_end_count==1);
-    image_note_ack(); assert(image_callbacks==1 && image_result==MUSE_HATCH_IMAGE_SENT);
+    assert(muse_chat_send_jpeg(photo(exact),exact,"\"\n",image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_QUEUED);
+    assert(sent_body_len==fixed+exact && sent_body_len<=MUSE_CHAT_IMAGE_BODY_MAX);
+    assert(MUSE_CHAT_IMAGE_BODY_MAX-sent_body_len<4 && largest_body_chunk<=CHUNK_BYTES && body_end_count==1);
+    image_note_ack(); assert(image_callbacks==1 && image_result==MUSE_CHAT_IMAGE_SENT);
     muse_hatch_turn_cancel();
 }
 static void image_ack_and_network_errors(void) {
     image_callbacks=0;
-    assert(muse_hatch_send_jpeg(photo(8),8,"caption",image_done,(void*)0x1234)==MUSE_HATCH_IMAGE_QUEUED);
+    assert(muse_chat_send_jpeg(photo(8),8,"caption",image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_QUEUED);
     image_ack("{}");
-    assert(s_turn.phase==T_IDLE && image_callbacks==1 && image_result==MUSE_HATCH_IMAGE_REJECTED);
+    assert(s_turn.phase==T_IDLE && image_callbacks==1 && image_result==MUSE_CHAT_IMAGE_REJECTED);
 
     image_callbacks=0;
-    assert(muse_hatch_send_jpeg(photo(8),8,"caption",image_done,(void*)0x1234)==MUSE_HATCH_IMAGE_QUEUED);
+    assert(muse_chat_send_jpeg(photo(8),8,"caption",image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_QUEUED);
     feed(RX_NOTE,-1,NULL,0,true); voice_idle();
-    assert(s_turn.phase==T_IDLE && image_callbacks==1 && image_result==MUSE_HATCH_IMAGE_NETWORK_ERROR);
+    assert(s_turn.phase==T_IDLE && image_callbacks==1 && image_result==MUSE_CHAT_IMAGE_NETWORK_ERROR);
 
     image_callbacks=0;
-    assert(muse_hatch_send_jpeg(photo(8),8,"caption",image_done,(void*)0x1234)==MUSE_HATCH_IMAGE_QUEUED);
+    assert(muse_chat_send_jpeg(photo(8),8,"caption",image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_QUEUED);
     frame_fn stale=requests[RX_NOTE].cb; void *stale_ctx=requests[RX_NOTE].ctx;
     muse_hatch_turn_cancel();
-    assert(s_turn.phase==T_IDLE && image_callbacks==1 && image_result==MUSE_HATCH_IMAGE_NETWORK_ERROR);
+    assert(s_turn.phase==T_IDLE && image_callbacks==1 && image_result==MUSE_CHAT_IMAGE_BUSY);
     stale(stale_ctx,200,(const uint8_t*)"{\"message_id\":\"late\"}",21,true); voice_idle();
     assert(image_callbacks==1 && s_turn.phase==T_IDLE);
 }
 static void image_idle_lifecycle(void) {
     image_callbacks=0;
-    assert(muse_hatch_send_jpeg(photo(8),8,"first",image_done,(void*)0x1234)==MUSE_HATCH_IMAGE_QUEUED);
-    assert(muse_hatch_needs_voice_poll());
+    assert(muse_chat_send_jpeg(photo(8),8,"first",image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_QUEUED);
+    assert(muse_chat_needs_voice_poll());
     feed(RX_NOTE,200,"{\"message_id\":\"first\"}",22,true);
     assert(!image_callbacks); /* the Link task only records the frame */
     voice_idle();             /* the production idle voice loop owns completion */
-    assert(image_callbacks==1 && image_result==MUSE_HATCH_IMAGE_SENT);
+    assert(image_callbacks==1 && image_result==MUSE_CHAT_IMAGE_SENT);
     muse_hatch_turn_cancel();
-    assert(image_callbacks==1 && !muse_hatch_needs_voice_poll());
+    assert(image_callbacks==1 && !muse_chat_needs_voice_poll());
 
     image_callbacks=0;
-    assert(muse_hatch_send_jpeg(photo(8),8,"timeout",image_done,(void*)0x1234)==MUSE_HATCH_IMAGE_QUEUED);
+    assert(muse_chat_send_jpeg(photo(8),8,"timeout",image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_QUEUED);
     now+=REPLY_TIMEOUT_US+1;
     voice_idle();
-    assert(image_callbacks==1 && image_result==MUSE_HATCH_IMAGE_NETWORK_ERROR);
-    assert(!muse_hatch_needs_voice_poll());
+    assert(image_callbacks==1 && image_result==MUSE_CHAT_IMAGE_NETWORK_ERROR);
+    assert(!muse_chat_needs_voice_poll());
 
     image_callbacks=0;
-    assert(muse_hatch_send_jpeg(photo(8),8,"busy",image_done,(void*)0x1234)==MUSE_HATCH_IMAGE_QUEUED);
-    assert(muse_hatch_send_jpeg(photo(8),8,"second",image_done,(void*)0x1234)==MUSE_HATCH_IMAGE_BUSY);
+    assert(muse_chat_send_jpeg(photo(8),8,"busy",image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_QUEUED);
+    assert(muse_chat_send_jpeg(photo(8),8,"second",image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_BUSY);
     assert(!image_callbacks);
     muse_hatch_turn_cancel();
-    assert(image_callbacks==1 && image_result==MUSE_HATCH_IMAGE_NETWORK_ERROR);
+    assert(image_callbacks==1 && image_result==MUSE_CHAT_IMAGE_BUSY);
+    muse_hatch_turn_cancel();
+    assert(image_callbacks==1);
+
+    image_callbacks=0; /* a talk press before the ACK takes chat over */
+    assert(muse_chat_send_jpeg(photo(8),8,"press",image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_QUEUED);
+    muse_hatch_turn_begin();
+    assert(image_callbacks==1 && image_result==MUSE_CHAT_IMAGE_BUSY);
     muse_hatch_turn_cancel();
     assert(image_callbacks==1);
 
     image_callbacks=0;
-    assert(muse_hatch_send_jpeg(photo(8),8,"again",image_done,(void*)0x1234)==MUSE_HATCH_IMAGE_QUEUED);
+    assert(muse_chat_send_jpeg(photo(8),8,"again",image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_QUEUED);
     image_note_ack();
-    assert(image_callbacks==1 && image_result==MUSE_HATCH_IMAGE_SENT);
+    assert(image_callbacks==1 && image_result==MUSE_CHAT_IMAGE_SENT);
     muse_hatch_turn_cancel();
 }
 int main(int argc,char **argv) {

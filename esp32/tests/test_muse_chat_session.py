@@ -303,6 +303,22 @@ static void typed_reply_at_cap(bool finished, bool busy) {
     assert(!strcmp(console_fields, finished && !busy ? "\"messages\":1,\"complete\":true"
                                                      : "\"messages\":1,\"complete\":false"));
 }
+/* A photo sent while voice is idle: nothing drains reply audio, so its reply
+ * must end the turn without queueing paced captions, for every reply length. */
+static void image_reply_completes_without_playback() {
+    static const char *replies[] = {"Hi", "A cat on a windowsill, looking out at the rain."};
+    for (const char *reply : replies) {
+        begin();
+        s_turn.image = true;
+        event("message.assistant", "reply", "note", reply);
+        assert(s_turn.nmsgs == 1 && s_turn.msgs[0].done && s_turn.msgs[0].tts == TTS_NONE);
+        start_tts();
+        assert(s_turn.tts_msg == -1 && !s_turn.silent);
+        clock_us += SETTLE_US + 1;
+        check_turn();
+        assert(s_turn.phase == P_IDLE && done_events == 1 && !done_text[0] && !fail_events);
+    }
+}
 int main(int argc, char **argv) {
     assert(argc == 2);
     switch (atoi(argv[1])) {
@@ -324,6 +340,7 @@ int main(int argc, char **argv) {
     case 15: typed_reply_at_cap(true, false); break;
     case 16: typed_reply_at_cap(true, true); break;
     case 17: typed_reply_at_cap(false, false); break;
+    case 18: image_reply_completes_without_playback(); break;
     default: return 2;
     }
 }
@@ -392,3 +409,6 @@ int main(int argc, char **argv) {
         for name, case in [('finished idle', 15), ('finished busy', 16), ('streaming', 17)]:
             with self.subTest(reply=name):
                 self.run_case(case)
+
+    def test_image_reply_ends_the_turn_without_playback(self):
+        self.run_case(18)

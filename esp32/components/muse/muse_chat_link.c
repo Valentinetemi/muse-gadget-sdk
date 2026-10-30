@@ -107,7 +107,7 @@ static muse_chat_rejected_t s_rejected;   /* under s_rx_lock */
 /* Voice task only. */
 static struct {
     phase_t phase;
-    muse_hatch_image_done_t image_done;
+    muse_chat_image_done_t image_done;
     void *image_ctx;
     uint8_t *stage;                     /* PCM waiting for the next chunk */
     size_t stage_len;
@@ -557,9 +557,9 @@ static void emit(muse_hatch_ev_t type, const char *text)
     xQueueSend(s_events, &ev, 0);
 }
 
-static void end_turn_as(muse_hatch_image_result_t image_result)
+static void end_turn_as(muse_chat_image_result_t image_result)
 {
-    muse_hatch_image_done_t done = s_turn.image_done;
+    muse_chat_image_done_t done = s_turn.image_done;
     void *ctx = s_turn.image_ctx;
     s_turn.image_done = NULL;
     s_turn.image_ctx = NULL;
@@ -575,12 +575,13 @@ static void end_turn_as(muse_hatch_image_result_t image_result)
     }
 }
 
+/* Ended without an error: done, cancelled, or another turn took over. */
 static void end_turn(void)
 {
-    end_turn_as(MUSE_HATCH_IMAGE_NETWORK_ERROR);
+    end_turn_as(MUSE_CHAT_IMAGE_BUSY);
 }
 
-static void fail_as(const char *why, muse_hatch_image_result_t image_result)
+static void fail_as(const char *why, muse_chat_image_result_t image_result)
 {
     ESP_LOGW(TAG, "turn failed: %s", why);
     strlcpy(s_turn.error, why, sizeof(s_turn.error));
@@ -590,7 +591,7 @@ static void fail_as(const char *why, muse_hatch_image_result_t image_result)
 
 static void fail(const char *why)
 {
-    fail_as(why, MUSE_HATCH_IMAGE_NETWORK_ERROR);
+    fail_as(why, MUSE_CHAT_IMAGE_NETWORK_ERROR);
 }
 
 /* ---- The note ---- */
@@ -617,7 +618,7 @@ static void on_ack(void)
         bool rejected = rx->status == MUSE_LINK_REQ_TOO_LARGE || rx->status >= 0;
         fail_as(rx->status == MUSE_LINK_REQ_TOO_LARGE ? TOO_LONG
                 : rx->status < 0 ? "LOST CONNECTION TO MUSE" : "MUSE DIDN'T TAKE IT",
-                rejected ? MUSE_HATCH_IMAGE_REJECTED : MUSE_HATCH_IMAGE_NETWORK_ERROR);
+                rejected ? MUSE_CHAT_IMAGE_REJECTED : MUSE_CHAT_IMAGE_NETWORK_ERROR);
         return;
     }
     cJSON *root = cJSON_Parse(rx->body);
@@ -629,7 +630,7 @@ static void on_ack(void)
     cJSON_Delete(root);
     if (!s_turn.note_id[0]) {
         ESP_LOGW(TAG, "chat/stream ack without a message id");
-        fail_as("MUSE DIDN'T TAKE IT", MUSE_HATCH_IMAGE_REJECTED);
+        fail_as("MUSE DIDN'T TAKE IT", MUSE_CHAT_IMAGE_REJECTED);
         return;
     }
     xSemaphoreTake(s_rx_lock, portMAX_DELAY);
@@ -645,11 +646,11 @@ static void on_ack(void)
     s_turn.phase = T_REPLY;
     emit(MUSE_HATCH_EV_SENT, NULL);
     if (s_turn.image_done) {
-        muse_hatch_image_done_t done = s_turn.image_done;
+        muse_chat_image_done_t done = s_turn.image_done;
         void *ctx = s_turn.image_ctx;
         s_turn.image_done = NULL;
         s_turn.image_ctx = NULL;
-        done(MUSE_HATCH_IMAGE_SENT, ctx);
+        done(MUSE_CHAT_IMAGE_SENT, ctx);
     }
 }
 
@@ -849,7 +850,7 @@ bool muse_hatch_ready(void)
     return s_events && muse_link_hatch_linked() && muse_wifi_connected() && muse_link_req_ready();
 }
 
-bool muse_hatch_needs_voice_poll(void)
+bool muse_chat_needs_voice_poll(void)
 {
     return s_turn.phase != T_IDLE;
 }
@@ -865,60 +866,60 @@ static bool send_image_piece(const char *data, size_t len)
     return true;
 }
 
-muse_hatch_image_result_t muse_hatch_send_jpeg(char *jpeg_base64, size_t jpeg_base64_len,
-                                                const char *caption, muse_hatch_image_done_t done,
-                                                void *ctx)
+muse_chat_image_result_t muse_chat_send_jpeg(char *jpeg_base64, size_t jpeg_base64_len,
+                                              const char *caption, muse_chat_image_done_t done,
+                                              void *ctx)
 {
     size_t caption_len, body_len;
-    if (!muse_hatch_is_jpeg_base64(jpeg_base64, jpeg_base64_len)) {
+    if (!muse_chat_is_jpeg_base64(jpeg_base64, jpeg_base64_len)) {
         free(jpeg_base64);
-        return MUSE_HATCH_IMAGE_INVALID_JPEG;
+        return MUSE_CHAT_IMAGE_INVALID_JPEG;
     }
-    if (!muse_hatch_image_body_size(caption, jpeg_base64_len, &caption_len, &body_len)) {
+    if (!muse_chat_image_body_size(caption, jpeg_base64_len, &caption_len, &body_len)) {
         free(jpeg_base64);
-        return MUSE_HATCH_IMAGE_TOO_LARGE;
+        return MUSE_CHAT_IMAGE_TOO_LARGE;
     }
     if (!muse_hatch_ready()) {
         free(jpeg_base64);
-        return MUSE_HATCH_IMAGE_NETWORK_ERROR;
+        return MUSE_CHAT_IMAGE_NETWORK_ERROR;
     }
     if (s_turn.phase != T_IDLE) {
         free(jpeg_base64);
-        return MUSE_HATCH_IMAGE_BUSY;
+        return MUSE_CHAT_IMAGE_BUSY;
     }
     char *escaped = malloc(caption_len + 1);
-    if (!escaped || !muse_hatch_json_escape(caption, escaped, caption_len + 1)) {
+    if (!escaped || !muse_chat_json_escape(caption, escaped, caption_len + 1)) {
         free(escaped);
         free(jpeg_base64);
-        return MUSE_HATCH_IMAGE_NO_MEMORY;
+        return MUSE_CHAT_IMAGE_NO_MEMORY;
     }
 
     xQueueReset(s_events);
     memset(&s_turn, 0, sizeof(s_turn));
     s_turn.phase = T_IMAGE;
     bool ok = request(RX_NOTE, "POST", "/chat/stream", true, false)
-              && send_image_piece(MUSE_HATCH_IMAGE_HEAD_1, sizeof(MUSE_HATCH_IMAGE_HEAD_1) - 1)
+              && send_image_piece(MUSE_CHAT_IMAGE_HEAD_1, sizeof(MUSE_CHAT_IMAGE_HEAD_1) - 1)
               && send_image_piece(escaped, caption_len)
-              && send_image_piece(MUSE_HATCH_IMAGE_HEAD_2, sizeof(MUSE_HATCH_IMAGE_HEAD_2) - 1)
+              && send_image_piece(MUSE_CHAT_IMAGE_HEAD_2, sizeof(MUSE_CHAT_IMAGE_HEAD_2) - 1)
               && send_image_piece(escaped, caption_len)
-              && send_image_piece(MUSE_HATCH_IMAGE_HEAD_3, sizeof(MUSE_HATCH_IMAGE_HEAD_3) - 1)
+              && send_image_piece(MUSE_CHAT_IMAGE_HEAD_3, sizeof(MUSE_CHAT_IMAGE_HEAD_3) - 1)
               && send_image_piece(jpeg_base64, jpeg_base64_len)
               && request(RX_SUB, "POST", "/chat/subscribe", true, false)
               && muse_link_req_send(s_stream[RX_SUB], "{}", 2, true, SEND_WAIT_MS)
-              && muse_link_req_send(s_stream[RX_NOTE], MUSE_HATCH_IMAGE_TAIL,
-                                    sizeof(MUSE_HATCH_IMAGE_TAIL) - 1, true, SEND_WAIT_MS);
+              && muse_link_req_send(s_stream[RX_NOTE], MUSE_CHAT_IMAGE_TAIL,
+                                    sizeof(MUSE_CHAT_IMAGE_TAIL) - 1, true, SEND_WAIT_MS);
     free(escaped);
     free(jpeg_base64);
     if (!ok) {
         fail("CAN'T REACH MUSE");
-        return MUSE_HATCH_IMAGE_NETWORK_ERROR;
+        return MUSE_CHAT_IMAGE_NETWORK_ERROR;
     }
     s_turn.image_done = done;
     s_turn.image_ctx = ctx;
     s_turn.t_end = esp_timer_get_time();
     s_turn.phase = T_ACK;
     ESP_LOGI(TAG, "JPEG attachment: %u byte request", (unsigned)body_len);
-    return MUSE_HATCH_IMAGE_QUEUED;
+    return MUSE_CHAT_IMAGE_QUEUED;
 }
 
 void muse_hatch_turn_begin(void)

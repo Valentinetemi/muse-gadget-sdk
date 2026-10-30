@@ -1,6 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # SPDX-License-Identifier: Apache-2.0
-"""Exercise the PSRAM chat session's transactional startup and image ownership."""
+"""Exercise the PSRAM chat session's one-shot startup and image ownership."""
 import os
 from pathlib import Path
 import shlex
@@ -21,9 +21,9 @@ class ChatSessionStartup(unittest.TestCase):
         command_types = source[source.index('enum cmd_type_t'):source.index('struct ev_t')]
         image_ownership = source[source.index('static void free_image_job('):
                                  source.index('/* Streams the already-sized JSON')]
-        startup = source[source.index('static void startup_cleanup('):
+        startup = source[source.index('extern "C" void muse_hatch_start('):
                          source.index('extern "C" void muse_hatch_chat_connect')]
-        image_api = source[source.index('extern "C" muse_hatch_image_result_t muse_hatch_send_jpeg('):
+        image_api = source[source.index('extern "C" muse_chat_image_result_t muse_chat_send_jpeg('):
                            source.index('extern "C" muse_hatch_ev_t muse_hatch_turn_event')]
         code = r'''
 #include <atomic>
@@ -99,7 +99,6 @@ static QueueHandle_t xQueueCreateWithCaps(unsigned, size_t item_size, int) {
 static QueueHandle_t xQueueCreate(unsigned, size_t item_size) {
     return make_queue(item_size);
 }
-static void vQueueDelete(QueueHandle_t q) { tracked_free(q); }
 static int xQueueSend(QueueHandle_t q, const void *item, int) {
     if (!q || q->has_item || force_queue_full) return 0;
     memcpy(q->item, item, q->item_size);
@@ -116,7 +115,6 @@ static StreamBufferHandle_t xStreamBufferCreateWithCaps(size_t, size_t, int) {
     if (fail_mode == FAIL_STREAMS) return nullptr;
     return static_cast<fake_stream_buffer_t *>(tracked_calloc(1, sizeof(fake_stream_buffer_t)));
 }
-static void vStreamBufferDelete(StreamBufferHandle_t stream) { tracked_free(stream); }
 
 static void *psram_alloc(size_t n) {
     psram_calls++;
@@ -159,8 +157,8 @@ static int16_t *s_pcm, *s_pcm16;
 
 ''' + image_ownership + startup + image_api + r'''
 static int callbacks;
-static muse_hatch_image_result_t callback_result;
-static void image_done(muse_hatch_image_result_t result, void *) {
+static muse_chat_image_result_t callback_result;
+static void image_done(muse_chat_image_result_t result, void *) {
     callbacks++;
     callback_result = result;
 }
@@ -169,81 +167,70 @@ static char *photo() {
     memcpy(p, "/9j/AAAA", 9);
     return p;
 }
+/* A failed start keeps what it allocated (WithCaps objects can't be freed
+ * with the plain deletes) and is never retried; turns stay refused. */
 static void expect_failed_start(fail_mode_t mode, int psram_at = 0) {
     fail_mode = mode;
     fail_psram_at = psram_at;
     psram_calls = task_attempts = 0;
     muse_hatch_start();
-    assert(!s_task_ready.load() && !s_cmds && !s_events && !s_in && !s_out);
-    assert(!s_turn.chunk && !s_turn.mp3 && !s_turn.note && !s_turn.texts);
-    assert(!s_pcm && !s_pcm16 && allocations.empty());
-    assert(muse_hatch_send_jpeg(photo(), 8, "", image_done, nullptr)
-           == MUSE_HATCH_IMAGE_NETWORK_ERROR);
-    assert(!callbacks && allocations.empty());
+    assert(!s_task_ready.load() && !tasks_running);
+    size_t kept = allocations.size();
+    int attempts = task_attempts, calls = psram_calls;
+    fail_mode = FAIL_NONE;
+    muse_hatch_start();
+    assert(allocations.size() == kept && task_attempts == attempts && psram_calls == calls);
+    assert(!s_task_ready.load() && !tasks_running);
+    assert(muse_chat_send_jpeg(photo(), 8, "", image_done, nullptr)
+           == MUSE_CHAT_IMAGE_NETWORK_ERROR);
+    assert(!callbacks && allocations.size() == kept);
 }
 static void start_ok() {
     fail_mode = FAIL_NONE;
     psram_calls = task_attempts = 0;
     muse_hatch_start();
     assert(s_task_ready.load() && s_cmds && tasks_running == 1 && task_attempts == 1);
+    size_t live = allocations.size();
+    muse_hatch_start();
+    assert(task_attempts == 1 && allocations.size() == live); /* idempotent */
 }
-static void finish_queued(muse_hatch_image_result_t result) {
+static void finish_queued(muse_chat_image_result_t result) {
     cmd_t cmd{};
     assert(receive(s_cmds, &cmd));
     assert(cmd.type == CMD_IMAGE && cmd.image);
     finish_image_job(cmd.image, result);
 }
-static void stop_fake_task_and_cleanup() {
-    tasks_running = 0;
-    startup_cleanup();
-    assert(allocations.empty());
-}
-static void allocation_failures() {
-    expect_failed_start(FAIL_QUEUES);
-    expect_failed_start(FAIL_STREAMS);
-    expect_failed_start(FAIL_PSRAM, 1); /* required turn buffer */
-    expect_failed_start(FAIL_PSRAM, 7); /* first per-stream receive buffer */
-    start_ok();
-    stop_fake_task_and_cleanup();
-}
-static void task_failure_retry() {
-    expect_failed_start(FAIL_TASK);
-    assert(task_attempts == 1 && !tasks_running);
-    start_ok();
-    size_t live = allocations.size();
-    muse_hatch_start();
-    assert(task_attempts == 1 && allocations.size() == live); /* idempotent */
-    stop_fake_task_and_cleanup();
-}
 static void accepted_busy_and_repeated_jobs() {
     start_ok();
     size_t baseline = allocations.size();
     force_queue_full = true;
-    assert(muse_hatch_send_jpeg(photo(), 8, "busy", image_done, nullptr)
-           == MUSE_HATCH_IMAGE_BUSY);
+    assert(muse_chat_send_jpeg(photo(), 8, "busy", image_done, nullptr)
+           == MUSE_CHAT_IMAGE_BUSY);
     assert(!callbacks && allocations.size() == baseline);
     force_queue_full = false;
 
-    assert(muse_hatch_send_jpeg(photo(), 8, "one", image_done, nullptr)
-           == MUSE_HATCH_IMAGE_QUEUED);
+    assert(muse_chat_send_jpeg(photo(), 8, "one", image_done, nullptr)
+           == MUSE_CHAT_IMAGE_QUEUED);
     assert(tasks_running == 1 && !callbacks);
-    finish_queued(MUSE_HATCH_IMAGE_SENT);
-    assert(callbacks == 1 && callback_result == MUSE_HATCH_IMAGE_SENT);
+    finish_queued(MUSE_CHAT_IMAGE_SENT);
+    assert(callbacks == 1 && callback_result == MUSE_CHAT_IMAGE_SENT);
     assert(allocations.size() == baseline);
 
-    assert(muse_hatch_send_jpeg(photo(), 8, "two", image_done, nullptr)
-           == MUSE_HATCH_IMAGE_QUEUED);
-    finish_queued(MUSE_HATCH_IMAGE_BUSY);
-    assert(callbacks == 2 && callback_result == MUSE_HATCH_IMAGE_BUSY);
+    assert(muse_chat_send_jpeg(photo(), 8, "two", image_done, nullptr)
+           == MUSE_CHAT_IMAGE_QUEUED);
+    finish_queued(MUSE_CHAT_IMAGE_BUSY);
+    assert(callbacks == 2 && callback_result == MUSE_CHAT_IMAGE_BUSY);
     assert(allocations.size() == baseline);
-    stop_fake_task_and_cleanup();
 }
 int main(int argc, char **argv) {
     assert(argc == 2);
     switch (atoi(argv[1])) {
-    case 0: allocation_failures(); break;
-    case 1: task_failure_retry(); break;
-    case 2: accepted_busy_and_repeated_jobs(); break;
+    case 0: expect_failed_start(FAIL_QUEUES); break;
+    case 1: expect_failed_start(FAIL_STREAMS); break;
+    case 2: expect_failed_start(FAIL_PSRAM, 1); break; /* required turn buffer */
+    case 3: expect_failed_start(FAIL_PSRAM, 7); break; /* first per-stream receive buffer */
+    case 4: expect_failed_start(FAIL_TASK); break;
+    case 5: accepted_busy_and_repeated_jobs(); break;
     default: return 2;
     }
 }
@@ -268,11 +255,13 @@ int main(int argc, char **argv) {
         result = subprocess.run([str(self.binary), str(case)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_required_allocations_are_transactional_and_retryable(self):
-        self.run_case(0)
+    def test_failed_allocations_refuse_turns_and_are_not_retried(self):
+        for case in range(4):
+            with self.subTest(case=case):
+                self.run_case(case)
 
-    def test_task_creation_failure_cleans_up_and_retry_starts_once(self):
-        self.run_case(1)
+    def test_task_creation_failure_refuses_turns_and_is_not_retried(self):
+        self.run_case(4)
 
     def test_only_a_running_consumer_accepts_repeated_jobs_and_busy_frees_ownership(self):
-        self.run_case(2)
+        self.run_case(5)

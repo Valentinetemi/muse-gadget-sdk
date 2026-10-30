@@ -900,13 +900,13 @@ static bool can_record(void)
  * still owns ACK, timeout and terminal-error progress for an image turn. */
 static bool poll_idle_chat(void)
 {
-    if (!muse_hatch_needs_voice_poll()) {
+    if (!muse_chat_needs_voice_poll()) {
         return false;
     }
     char text[96];
     while (muse_hatch_turn_event(text, sizeof(text)) != MUSE_HATCH_EV_NONE) {
     }
-    return muse_hatch_needs_voice_poll();
+    return muse_chat_needs_voice_poll();
 }
 
 #if CONFIG_MUSE_REALTIME_VOICE
