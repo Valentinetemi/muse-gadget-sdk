@@ -22,6 +22,11 @@
 
 #include "esp_mac.h"
 #include "esp_log.h"
+#if CONFIG_ESP_HOSTED_ENABLED
+#include "esp_wifi.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#endif
 
 #include "config_store.h"
 
@@ -45,11 +50,25 @@ static char s_device_id[48];
 static char s_sdk_token[IDENTITY_SDK_TOKEN_LEN + 1];
 
 #define SDK_TOKEN_KEY "sdk_token"
+// Cleared with the pairing credentials (config_clear_pairing).
+#define PAIRED_SDK_TOKEN_KEY "pair_sdk_hint"
+#define NO_SDK_TOKEN_HINT "none"
 
 void identity_init(void) {
     uint8_t mac[6] = {0};
-    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) != ESP_OK) {
-        ESP_LOGW(TAG, "esp_read_mac failed; using zeros");
+#if CONFIG_ESP_HOSTED_ENABLED
+    /* The STA MAC is the Wi-Fi coprocessor's: app_run() brings Wi-Fi up first.
+     * It names the device to Muse, so retry a failed call before using zeros. */
+    esp_err_t err = esp_wifi_get_mac(WIFI_IF_STA, mac);
+    for (int i = 0; i < 4 && err != ESP_OK; i++) {
+        vTaskDelay(pdMS_TO_TICKS(250));
+        err = esp_wifi_get_mac(WIFI_IF_STA, mac);
+    }
+#else
+    esp_err_t err = esp_read_mac(mac, ESP_MAC_WIFI_STA);
+#endif
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "STA MAC unavailable (%s); using zeros", esp_err_to_name(err));
     }
     snprintf(s_node_id, sizeof(s_node_id),
              NODE_ID_PREFIX "-%02x%02x%02x", mac[3], mac[4], mac[5]);
@@ -95,4 +114,28 @@ bool identity_sdk_token_valid(const char *token) {
 // until the next one.
 bool identity_set_sdk_token(const char *token) {
     return identity_sdk_token_valid(token) && config_set_str(SDK_TOKEN_KEY, token);
+}
+
+static void sdk_token_hint(char out[IDENTITY_SDK_TOKEN_HINT_LEN + 1]) {
+    const char *token = identity_sdk_token();
+    snprintf(out, IDENTITY_SDK_TOKEN_HINT_LEN + 1, "%.*s", IDENTITY_SDK_TOKEN_HINT_LEN,
+             token ? token : NO_SDK_TOKEN_HINT);
+}
+
+void identity_note_paired_sdk_token(void) {
+    char hint[IDENTITY_SDK_TOKEN_HINT_LEN + 1];
+    sdk_token_hint(hint);
+    if (!config_set_str(PAIRED_SDK_TOKEN_KEY, hint)) {
+        ESP_LOGW(TAG, "couldn't store which SDK token pairing used");
+    }
+}
+
+bool identity_sdk_token_changed_since_pairing(char *paired_hint, size_t cap) {
+    char paired[IDENTITY_SDK_TOKEN_HINT_LEN + 1];
+    if (!config_get_str(PAIRED_SDK_TOKEN_KEY, paired, sizeof(paired))) return false;
+    char current[IDENTITY_SDK_TOKEN_HINT_LEN + 1];
+    sdk_token_hint(current);
+    if (strcmp(paired, current) == 0) return false;
+    if (paired_hint && cap) snprintf(paired_hint, cap, "%s", paired);
+    return true;
 }
