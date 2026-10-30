@@ -2176,7 +2176,7 @@ static void handle(const cmd_t &cmd)
         break;
     case CMD_TEXT:
         if (s_turn.phase != P_IDLE && !s_turn.text) {
-            muse_hatch_console("error", "BUSY WITH A VOICE TURN", nullptr);
+            muse_hatch_console("error", s_turn.image ? "BUSY WITH A PHOTO" : "BUSY WITH A VOICE TURN", nullptr);
         } else {
             text_begin(cmd.text);
         }

@@ -116,6 +116,7 @@ static struct {
     unsigned seen_count;
     int64_t t_end, t_reply, t_show;
     bool heard, replied;
+    bool image;                         /* a photo's turn: nothing shows its reply */
     bool after_note;
     char error[EV_TEXT];                /* why the turn failed, repeated at the release */
     char text[TEXT_MAX];
@@ -781,7 +782,7 @@ static void pump(void)
         return;
     }
     if (s_turn.replied) {
-        if (scroll(now) && now - s_turn.t_reply > SETTLE_US) {
+        if ((s_turn.image || scroll(now)) && now - s_turn.t_reply > SETTLE_US) {
             end_turn();
             emit(MUSE_HATCH_EV_DONE, NULL);
         }
@@ -897,6 +898,7 @@ muse_chat_image_result_t muse_chat_send_jpeg(char *jpeg_base64, size_t jpeg_base
     xQueueReset(s_events);
     memset(&s_turn, 0, sizeof(s_turn));
     s_turn.phase = T_IMAGE;
+    s_turn.image = true;
     bool ok = request(RX_NOTE, "POST", "/chat/stream", true, false)
               && send_image_piece(MUSE_CHAT_IMAGE_HEAD_1, sizeof(MUSE_CHAT_IMAGE_HEAD_1) - 1)
               && send_image_piece(escaped, caption_len)

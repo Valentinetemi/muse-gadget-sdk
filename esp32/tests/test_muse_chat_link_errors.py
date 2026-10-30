@@ -492,6 +492,20 @@ static void image_idle_lifecycle(void) {
     image_note_ack();
     assert(image_callbacks==1 && image_result==MUSE_CHAT_IMAGE_SENT);
     muse_hatch_turn_cancel();
+
+    /* Nothing shows a photo's reply: once it's in and settled the turn ends,
+     * however long captions would take to scroll, and chat takes the next. */
+    image_callbacks=0;
+    assert(muse_chat_send_jpeg(photo(8),8,"long",image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_QUEUED);
+    image_note_ack();
+    char reply[901]; memset(reply,'a',900); reply[900]=0;
+    final("reply","note",reply); voice_idle();
+    assert(s_turn.phase==T_REPLY && s_turn.replied);
+    now+=SETTLE_US+1; voice_idle();
+    assert(s_turn.phase==T_IDLE && !muse_chat_needs_voice_poll());
+    assert(muse_chat_send_jpeg(photo(8),8,"next",image_done,(void*)0x1234)==MUSE_CHAT_IMAGE_QUEUED);
+    muse_hatch_turn_cancel();
+    assert(image_callbacks==2 && image_result==MUSE_CHAT_IMAGE_BUSY);
 }
 int main(int argc,char **argv) {
     assert(argc==2); muse_hatch_start();
