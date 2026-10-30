@@ -343,8 +343,8 @@ static void *json_alloc(size_t n)
 
 static void emit(muse_hatch_ev_t type, const char *text)
 {
-    if (s_turn.text) {
-        return;   /* typed turns report to the console instead */
+    if (s_turn.text || s_turn.image) {
+        return;   /* typed turns report to the console; a photo's turn reports to its callback */
     }
     ev_t ev = {};
     ev.type = type;
@@ -1055,7 +1055,7 @@ static void turn_done(bool complete)
 }
 
 /* Ends any turn in progress and starts a fresh one. False if Hatch can't be reached. */
-static bool turn_start(uint32_t gen, bool text)
+static bool turn_start(uint32_t gen, bool text, bool image = false)
 {
     if (s_turn.phase != P_IDLE) {
         if (s_turn.text) {
@@ -1073,6 +1073,7 @@ static bool turn_start(uint32_t gen, bool text)
     s_turn.texts = texts;
     s_turn.gen = gen;
     s_turn.text = text;
+    s_turn.image = image;
     s_turn.tts_msg = -1;
     memset(s_marks, 0, sizeof(s_marks));
     s_reply_shown[0] = '\0';
@@ -1331,14 +1332,16 @@ static void send_image(image_job_t *job)
     ESP_LOGI(TAG, "JPEG attachment: %u byte request", (unsigned)body_len);
 }
 
+static bool call_busy(void);
+
 static void image_begin(image_job_t *job, uint32_t gen)
 {
-    if (s_turn.phase != P_IDLE || gen != s_gen.load()) {
+    /* A realtime call shares this task: a photo's upload would stall it. */
+    if (s_turn.phase != P_IDLE || call_busy() || gen != s_gen.load()) {
         finish_image_job(job, MUSE_CHAT_IMAGE_BUSY);
         return;
     }
-    xQueueReset(s_events);
-    if (!turn_start(gen, false)) {
+    if (!turn_start(gen, false, true)) {
         finish_image_job(job, MUSE_CHAT_IMAGE_NETWORK_ERROR);
         return;
     }
@@ -1847,6 +1850,13 @@ static void check_turn(void)
         return;
     }
     if (s_turn.phase != P_WAIT_REPLY) {
+        return;
+    }
+    if (s_turn.image && !s_turn.acked) {
+        /* A photo's turn can't end on its reply alone: SENT, or a failure, comes first. */
+        if (t - s_turn.chat_us > REPLY_TIMEOUT_US) {
+            turn_fail("NO REPLY FROM MUSE");
+        }
         return;
     }
     bool text = s_turn.text;

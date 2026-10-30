@@ -116,7 +116,7 @@ typedef void (*muse_chat_image_done_t)(muse_chat_image_result_t result, void *ct
  * `done` is called exactly once with SENT, BUSY, NETWORK_ERROR, or REJECTED.
  * SENT means Muse accepted the message; BUSY after QUEUED means a voice turn
  * took over chat first. The callback runs on the chat/voice task and must not
- * block. Muse's reply isn't shown or spoken on the gadget: it's in the Muse
+ * block or start another photo or turn. Muse's reply isn't shown or spoken on the gadget: it's in the Muse
  * app. Chat stays busy until that reply settles.
  */
 muse_chat_image_result_t muse_chat_send_jpeg(char *jpeg_base64, size_t jpeg_base64_len,
